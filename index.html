@@ -6,17 +6,43 @@
 <title>هفت خبیث</title>
 <meta name="theme-color" content="#0A0E0A" />
 <style>
-  html, body { margin: 0; padding: 0; background: #0A0E0A; }
+  html, body { margin: 0; padding: 0; background: #0A0E0A; font-family: sans-serif; }
   #root { min-height: 100vh; }
+  #boot-error {
+    display: none; position: fixed; inset: 0; z-index: 9999; background: #1a0000; color: #ffb3b3;
+    padding: 24px; font-family: monospace; direction: ltr; text-align: left; overflow: auto; font-size: 13px; line-height: 1.6;
+  }
+  #boot-status { color: #D4AF37; font-family: sans-serif; text-align: center; padding-top: 40vh; direction: rtl; }
 </style>
 </head>
 <body>
-<div id="root"></div>
+<div id="root"><div id="boot-status">در حال بارگذاری کتابخانه‌ها…</div></div>
+<div id="boot-error"></div>
 
-<script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
-<script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
-<script src="https://unpkg.com/tone@14.7.77/build/Tone.js"></script>
-<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<script>
+  window.addEventListener('error', function (e) {
+    var box = document.getElementById('boot-error');
+    box.style.display = 'block';
+    box.innerText += 'خطا: ' + (e.message || e.error) + '\n' + (e.filename ? (e.filename + ':' + e.lineno) : '') + '\n\n';
+  });
+</script>
+
+<script crossorigin src="https://cdn.jsdelivr.net/npm/react@18/umd/react.production.min.js"></script>
+<script crossorigin src="https://cdn.jsdelivr.net/npm/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/tone@14.7.77/build/Tone.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@babel/standalone@7/babel.min.js"></script>
+
+<script>
+  window.addEventListener('DOMContentLoaded', function () {
+    setTimeout(function () {
+      if (!window.React || !window.ReactDOM || !window.Babel) {
+        var box = document.getElementById('boot-error');
+        box.style.display = 'block';
+        box.innerText += 'یکی از کتابخونه‌های ضروری لود نشد (React: ' + !!window.React + ', ReactDOM: ' + !!window.ReactDOM + ', Babel: ' + !!window.Babel + ', Tone: ' + !!window.Tone + ').\nاحتمالاً CDN فیلتر یا مسدوده. اگه از VPN استفاده می‌کنی روشنش کن و صفحه رو رفرش کن.\n\n';
+      }
+    }, 4000);
+  });
+</script>
 
 <script type="text/babel" data-presets="react">
 const { useState, useEffect, useRef } = React;
