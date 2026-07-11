@@ -73,6 +73,10 @@ function shade(hex, percent) {
 }
 
 /* ---------- synthesized sound effects (no external audio files) ---------- */
+function vibrate(pattern) {
+  try { if (navigator.vibrate) navigator.vibrate(pattern); } catch (e) { /* ignore */ }
+}
+
 const soundManager = (() => {
   let enabled = true;
   let started = false;
@@ -101,6 +105,10 @@ const soundManager = (() => {
     async eliminate() {
       if (!enabled) return; await ensure();
       try { const now = Tone.now(); synth.triggerAttackRelease("A3", "8n", now); synth.triggerAttackRelease("F3", "8n", now + 0.16); synth.triggerAttackRelease("D3", "4n", now + 0.32); } catch (e) {}
+    },
+    async trash() {
+      if (!enabled) return; await ensure();
+      try { const now = Tone.now(); synth.triggerAttackRelease("G4", "16n", now); synth.triggerAttackRelease("C4", "8n", now + 0.07); } catch (e) {}
     },
     async fanfare() {
       if (!enabled) return; await ensure();
@@ -503,6 +511,7 @@ function App() {
   const [celebration, setCelebration] = useState(null);
   const [roundPanel, setRoundPanel] = useState(null);
   const [soundOn, setSoundOn] = useState(true);
+  const [undoSnapshot, setUndoSnapshot] = useState(null);
 
   const colorCursor = useRef(0);
 
@@ -544,10 +553,12 @@ function App() {
     setSetupPlayers((s) => [...s, { id: uid(), name: sp.name, color: nextColor(used) }]);
   }
   function removeSetupPlayer(id) {
+    soundManager.trash();
     setSetupPlayers((s) => s.filter((p) => p.id !== id));
   }
   async function removeSavedPlayer(id, e) {
     e.stopPropagation();
+    soundManager.trash();
     const next = savedPlayers.filter((p) => p.id !== id);
     setSavedPlayers(next);
     await storageSet("saved-players", next);
@@ -556,9 +567,10 @@ function App() {
   async function startGame() {
     if (setupPlayers.length < 2) return;
     soundManager.deal();
+    setUndoSnapshot(null);
     const gamePlayers = setupPlayers.map((p) => ({
       id: p.id, name: p.name, color: p.color,
-      rounds: [], total: 0, eliminated: false, eliminatedAtRound: null,
+      rounds: [], total: 0, eliminated: false, eliminatedAtRound: null, prevRank: null,
     }));
     const newGame = { id: uid(), startedAt: Date.now(), currentRound: 0, status: "active", players: gamePlayers };
     setGame(newGame);
@@ -589,6 +601,9 @@ function App() {
     });
     if (missing) return;
 
+    setUndoSnapshot(game);
+
+    const preRoundRanks = rankPlayers(game.players);
     const newRoundNumber = game.currentRound + 1;
     const newlyEliminated = [];
 
@@ -599,7 +614,8 @@ function App() {
       const newRounds = [...p.rounds, { round: newRoundNumber, score, cumulative: newTotal }];
       const willBeEliminated = newTotal > ELIMINATION_LIMIT;
       if (willBeEliminated) newlyEliminated.push(p.name);
-      return { ...p, rounds: newRounds, total: newTotal, eliminated: willBeEliminated, eliminatedAtRound: willBeEliminated ? newRoundNumber : null };
+      const prevRank = preRoundRanks.find((x) => x.id === p.id)?.rank ?? null;
+      return { ...p, rounds: newRounds, total: newTotal, eliminated: willBeEliminated, eliminatedAtRound: willBeEliminated ? newRoundNumber : null, prevRank };
     });
 
     const updatedGame = { ...game, players: updatedPlayers, currentRound: newRoundNumber };
@@ -607,7 +623,8 @@ function App() {
     await storageSet("active-game", updatedGame);
     setRoundInputs({});
     soundManager.submit();
-    if (newlyEliminated.length) { setEliminationQueue(newlyEliminated); soundManager.eliminate(); }
+    vibrate(15);
+    if (newlyEliminated.length) { setEliminationQueue(newlyEliminated); soundManager.eliminate(); vibrate([40, 60, 40]); }
 
     const ranked = rankPlayers(updatedPlayers);
     const roundData = activePlayers.map((ap) => {
@@ -619,8 +636,21 @@ function App() {
     setRoundPanel({ round: newRoundNumber, loading: false, text });
   }
 
+  async function undoLastRound() {
+    if (!undoSnapshot) return;
+    soundManager.trash();
+    vibrate(20);
+    setGame(undoSnapshot);
+    await storageSet("active-game", undoSnapshot);
+    setUndoSnapshot(null);
+    setRoundPanel(null);
+    setEliminationQueue([]);
+  }
+
   async function endGame() {
     if (!game) return;
+    if (!window.confirm("مطمئنی می‌خوای بازی رو همین‌جا تموم کنی؟")) return;
+    setUndoSnapshot(null);
     const ranked = rankPlayers(game.players);
     const finished = { ...game, status: "finished", finishedAt: Date.now(), players: ranked };
     const newHistory = [finished, ...history];
@@ -629,12 +659,20 @@ function App() {
     await storageDelete("active-game");
     setGame(null);
     soundManager.fanfare();
+    vibrate([30, 50, 30, 50, 90]);
     setCelebration({ top3: ranked.slice(0, 3), rest: ranked.slice(3) });
   }
 
   function closeCelebration() { setCelebration(null); setScreen("home"); }
   function goTo(target, from) { soundManager.click(); if (from) setPrevScreen(from); setScreen(target); }
   function openHistoryDetail(g) { soundManager.click(); setViewingGame(g); setScreen("historyDetail"); }
+  async function deleteGame(gameId) {
+    soundManager.trash();
+    vibrate(20);
+    const next = history.filter((g) => g.id !== gameId);
+    setHistory(next);
+    await storageSet("game-history", next);
+  }
   function toggleSound() { const next = !soundOn; setSoundOn(next); soundManager.setEnabled(next); if (next) soundManager.click(); }
 
   const activeGamePlayers = game ? rankPlayers(game.players) : [];
@@ -687,6 +725,7 @@ function App() {
         {screen === "game" && game && (
           <GameScreen game={game} rankedPlayers={activeGamePlayers} roundLabel={roundLabel} roundInputs={roundInputs}
             updateRoundInput={updateRoundInput} onSubmitRound={submitRound} onEndGame={endGame}
+            canUndo={!!undoSnapshot} onUndo={undoLastRound}
             onAnalysis={() => goTo("analysis", "game")} onChart={() => goTo("chart", "game")} onBack={() => goTo("home")} />
         )}
         {screen === "analysis" && (
@@ -698,7 +737,7 @@ function App() {
             onBack={() => goTo(prevScreen === "historyDetail" ? "historyDetail" : "game")} />
         )}
         {screen === "history" && (
-          <HistoryScreen history={history} onOpen={openHistoryDetail} onBack={() => goTo("home")} />
+          <HistoryScreen history={history} onOpen={openHistoryDetail} onDelete={deleteGame} onBack={() => goTo("home")} />
         )}
         {screen === "stats" && (
           <StatsScreen history={history} onBack={() => goTo("home")} />
@@ -899,25 +938,52 @@ function moodTitle(mood) {
   }
 }
 
-function GameScreen({ game, rankedPlayers, roundLabel, roundInputs, updateRoundInput, onSubmitRound, onEndGame, onAnalysis, onChart, onBack }) {
+function rankArrow(p) {
+  if (typeof p.prevRank !== "number") return null;
+  if (p.rank < p.prevRank) return <span style={{ color: "#4CC38A", fontSize: 12 }}>▲</span>;
+  if (p.rank > p.prevRank) return <span style={{ color: "#E48098", fontSize: 12 }}>▼</span>;
+  return <span style={{ color: "#8A9188", fontSize: 12 }}>–</span>;
+}
+
+function GameScreen({ game, rankedPlayers, roundLabel, roundInputs, updateRoundInput, onSubmitRound, onEndGame, canUndo, onUndo, onAnalysis, onChart, onBack }) {
   const activePlayers = game.players.filter((p) => !p.eliminated);
   const nextRound = game.currentRound + 1;
   const canSubmit = activePlayers.every((p) => {
     const v = roundInputs[p.id];
     return v !== undefined && v !== "" && !isNaN(Number(v));
   }) && activePlayers.length > 0;
+  const inputRefs = useRef({});
+
+  function handleInputKeyDown(e, playerId) {
+    if (e.key !== "Enter") return;
+    e.preventDefault();
+    const idx = activePlayers.findIndex((x) => x.id === playerId);
+    const next = activePlayers[idx + 1];
+    if (next && inputRefs.current[next.id]) {
+      inputRefs.current[next.id].focus();
+    } else if (canSubmit) {
+      onSubmitRound();
+    }
+  }
 
   return (
     <div className="felt-bg" style={{ minHeight: "100vh", padding: "20px 16px 80px" }}>
       <div style={{ maxWidth: 900, margin: "0 auto" }}>
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 22 }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 22, flexWrap: "wrap", gap: 8 }}>
           <button onClick={onBack} style={{ background: "none", border: "none", color: "#9CAA9C", cursor: "pointer", display: "flex", alignItems: "center", gap: 6 }}>
             → خانه
           </button>
           <div style={{ color: "#C9A227", fontWeight: 700, fontSize: 15 }}>{game.currentRound > 0 ? `پایان ${roundLabel(game.currentRound)}` : "شروع بازی"}</div>
-          <button onClick={onEndGame} style={{ background: "rgba(196,56,79,0.15)", border: "1px solid rgba(196,56,79,0.4)", color: "#E48098", borderRadius: 10, padding: "9px 16px", cursor: "pointer", fontSize: 14, fontWeight: 600 }}>
-            پایان بازی
-          </button>
+          <div style={{ display: "flex", gap: 8 }}>
+            {canUndo && (
+              <button onClick={onUndo} title="برگشت به قبل از این دست" style={{ background: "rgba(212,175,55,0.12)", border: "1px solid rgba(212,175,55,0.4)", color: "#D4AF37", borderRadius: 10, padding: "9px 14px", cursor: "pointer", fontSize: 14, fontWeight: 600 }}>
+                ↩️ برگشت
+              </button>
+            )}
+            <button onClick={onEndGame} style={{ background: "rgba(196,56,79,0.15)", border: "1px solid rgba(196,56,79,0.4)", color: "#E48098", borderRadius: 10, padding: "9px 16px", cursor: "pointer", fontSize: 14, fontWeight: 600 }}>
+              پایان بازی
+            </button>
+          </div>
         </div>
 
         <div style={{ display: "grid", gap: 14, gridTemplateColumns: "repeat(auto-fit, minmax(210px, 1fr))" }}>
@@ -936,7 +1002,7 @@ function GameScreen({ game, rankedPlayers, roundLabel, roundInputs, updateRoundI
                     <Avatar name={p.name} mood={mood} size={46} />
                     <div>
                       <div style={{ fontWeight: 800, fontSize: 16 }}>{p.name}</div>
-                      <div style={{ color: "#8A9188", fontSize: 12 }}>رتبه {p.rank} · {moodTitle(mood)}</div>
+                      <div style={{ color: "#8A9188", fontSize: 12, display: "flex", alignItems: "center", gap: 5 }}>رتبه {p.rank} {rankArrow(p)} · {moodTitle(mood)}</div>
                     </div>
                   </div>
                   <div style={{ fontSize: 22 }}>{rankEmoji(p.rank, p.eliminated)}</div>
@@ -962,7 +1028,8 @@ function GameScreen({ game, rankedPlayers, roundLabel, roundInputs, updateRoundI
               {activePlayers.map((p) => (
                 <div key={p.id}>
                   <label style={{ fontSize: 13, color: "#B9C0B6", display: "block", marginBottom: 6 }}>{p.name}</label>
-                  <input type="number" inputMode="numeric" value={roundInputs[p.id] ?? ""} onChange={(e) => updateRoundInput(p.id, e.target.value)} placeholder="امتیاز"
+                  <input type="number" inputMode="numeric" value={roundInputs[p.id] ?? ""} onChange={(e) => updateRoundInput(p.id, e.target.value)}
+                    onKeyDown={(e) => handleInputKeyDown(e, p.id)} ref={(el) => { inputRefs.current[p.id] = el; }} placeholder="امتیاز"
                     style={{ width: "100%", padding: "11px 12px", borderRadius: 10, border: `1px solid ${p.color}55`, background: "rgba(10,14,10,0.5)", color: "#EDEAE0", fontSize: 16, fontFamily: "inherit" }} />
                 </div>
               ))}
@@ -1087,7 +1154,13 @@ function ChartScreen({ players, buildChartData, onBack }) {
   );
 }
 
-function HistoryScreen({ history, onOpen, onBack }) {
+function HistoryScreen({ history, onOpen, onDelete, onBack }) {
+  function handleDelete(e, gameId) {
+    e.stopPropagation();
+    if (window.confirm("این بازی برای همیشه از تاریخچه حذف بشه؟")) {
+      onDelete(gameId);
+    }
+  }
   return (
     <div className="felt-bg" style={{ minHeight: "100vh", padding: "20px 16px 60px" }}>
       <TopBar title="تاریخچه بازی‌ها" onBack={onBack} />
@@ -1096,7 +1169,7 @@ function HistoryScreen({ history, onOpen, onBack }) {
         {history.map((g) => {
           const winner = g.players[0];
           return (
-            <button key={g.id} onClick={() => onOpen(g)} className="fade-up btn-ghost" style={{ textAlign: "right", borderRadius: 14, padding: "14px 18px", cursor: "pointer", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+            <div key={g.id} onClick={() => onOpen(g)} className="fade-up btn-ghost" style={{ textAlign: "right", borderRadius: 14, padding: "14px 18px", cursor: "pointer", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
               <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
                 <Avatar name={winner?.name || ""} mood="happy" size={40} crown />
                 <div>
@@ -1104,8 +1177,14 @@ function HistoryScreen({ history, onOpen, onBack }) {
                   <div style={{ color: "#8A9188", fontSize: 13, marginTop: 4 }}>{g.players.length} بازیکن · {fmtDate(g.finishedAt)}</div>
                 </div>
               </div>
-              <span style={{ fontSize: 20, color: "#8A9188" }}>‹</span>
-            </button>
+              <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
+                <button onClick={(e) => handleDelete(e, g.id)} title="حذف این بازی" style={{
+                  background: "rgba(196,56,79,0.12)", border: "1px solid rgba(196,56,79,0.35)", color: "#E48098",
+                  borderRadius: 8, width: 32, height: 32, display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", fontSize: 15,
+                }}>🗑</button>
+                <span style={{ fontSize: 20, color: "#8A9188" }}>‹</span>
+              </div>
+            </div>
           );
         })}
       </div>
@@ -1278,9 +1357,26 @@ function RoundAnalysisPanel({ panel, roundLabel, onClose }) {
 
 function CelebrationOverlay({ celebration, onClose }) {
   const { top3, rest } = celebration;
+  const [shareMsg, setShareMsg] = useState("");
   const confetti = Array.from({ length: 24 }, (_, i) => ({
     suit: SUITS[i % 4], left: `${(i * 37) % 100}%`, delay: `${(i % 10) * 0.35}s`, duration: `${3 + (i % 4)}s`,
   }));
+
+  async function shareResults() {
+    soundManager.click();
+    const all = [...top3, ...rest];
+    const lines = all.map((p, i) => `${i + 1}. ${p.name} — ${p.total} امتیاز ${rankEmoji(p.rank, p.eliminated)}`);
+    const text = `نتیجه بازی هفت خبیث 🃏\n\n${lines.join("\n")}`;
+    try {
+      if (navigator.share) {
+        await navigator.share({ text });
+      } else {
+        await navigator.clipboard.writeText(text);
+        setShareMsg("نتیجه کپی شد! برو توی گروه پیستش کن 📋");
+        setTimeout(() => setShareMsg(""), 2500);
+      }
+    } catch (e) { /* user cancelled, ignore */ }
+  }
 
   return (
     <div style={{ position: "fixed", inset: 0, background: "radial-gradient(circle at 50% 15%, #1A130A 0%, #05070500 60%), rgba(5,7,5,0.94)", zIndex: 60, overflow: "auto", display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}>
@@ -1315,9 +1411,17 @@ function CelebrationOverlay({ celebration, onClose }) {
           </div>
         )}
 
-        <button onClick={onClose} className="btn-gold" style={{ border: "none", borderRadius: 12, padding: "13px 34px", cursor: "pointer", fontSize: 16 }}>
-          بازگشت به خانه
-        </button>
+        <div style={{ display: "flex", gap: 12, justifyContent: "center", flexWrap: "wrap" }}>
+          <button onClick={onClose} className="btn-gold" style={{ border: "none", borderRadius: 12, padding: "13px 34px", cursor: "pointer", fontSize: 16 }}>
+            بازگشت به خانه
+          </button>
+          <button onClick={shareResults} className="btn-ghost" style={{ border: "1px solid rgba(212,175,55,0.35)", borderRadius: 12, padding: "13px 24px", cursor: "pointer", fontSize: 15 }}>
+            📤 اشتراک‌گذاری نتیجه
+          </button>
+        </div>
+        {shareMsg && (
+          <div className="fade-up" style={{ marginTop: 14, color: "#D4AF37", fontSize: 13 }}>{shareMsg}</div>
+        )}
       </div>
     </div>
   );
