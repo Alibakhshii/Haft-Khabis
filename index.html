@@ -1092,9 +1092,31 @@ function AnalysisScreen({ players, roundLabel, onBack }) {
 const thStyle = { textAlign: "right", padding: "10px 14px", fontSize: 13, color: "#9CAA9C", borderBottom: "1px solid rgba(237,234,224,0.15)" };
 const tdStyle = { textAlign: "right", padding: "10px 14px", fontSize: 14 };
 
+function smoothPath(points) {
+  if (points.length === 0) return "";
+  if (points.length === 1) return `M ${points[0].x} ${points[0].y}`;
+  let d = `M ${points[0].x} ${points[0].y}`;
+  for (let i = 0; i < points.length - 1; i++) {
+    const p0 = points[i - 1] || points[i];
+    const p1 = points[i];
+    const p2 = points[i + 1];
+    const p3 = points[i + 2] || p2;
+    const cp1x = p1.x + (p2.x - p0.x) / 6;
+    const cp1y = p1.y + (p2.y - p0.y) / 6;
+    const cp2x = p2.x - (p3.x - p1.x) / 6;
+    const cp2y = p2.y - (p3.y - p1.y) / 6;
+    d += ` C ${cp1x} ${cp1y}, ${cp2x} ${cp2y}, ${p2.x} ${p2.y}`;
+  }
+  return d;
+}
+
 function ChartScreen({ players, buildChartData, onBack }) {
   const data = buildChartData(players);
   const maxRound = data.length;
+  const svgRef = useRef(null);
+  const [hoverRound, setHoverRound] = useState(null);
+  const [hidden, setHidden] = useState(() => new Set());
+
   let maxY = 50;
   data.forEach((row) => players.forEach((p) => { const v = row[p.name]; if (v != null && v > maxY) maxY = v; }));
   maxY = Math.ceil(maxY / 50) * 50;
@@ -1103,6 +1125,30 @@ function ChartScreen({ players, buildChartData, onBack }) {
   const chartW = W - padL - padR, chartH = H - padT - padB;
   const xFor = (round) => padL + ((round - 1) / Math.max(maxRound - 1, 1)) * chartW;
   const yFor = (val) => padT + chartH - (val / maxY) * chartH;
+  const baseY = padT + chartH;
+
+  function toggleHidden(name) {
+    soundManager.click();
+    setHidden((prev) => {
+      const next = new Set(prev);
+      if (next.has(name)) next.delete(name); else next.add(name);
+      return next;
+    });
+  }
+
+  function handlePointer(e) {
+    if (!svgRef.current || maxRound === 0) return;
+    const rect = svgRef.current.getBoundingClientRect();
+    const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+    const scaleX = W / rect.width;
+    const localX = (clientX - rect.left) * scaleX;
+    const ratio = Math.min(1, Math.max(0, (localX - padL) / chartW));
+    const round = Math.round(1 + ratio * (maxRound - 1));
+    setHoverRound(Math.min(maxRound, Math.max(1, round)));
+  }
+
+  const visiblePlayers = players.filter((p) => !hidden.has(p.name));
+  const hoverRow = hoverRound ? data.find((r) => r.round === hoverRound) : null;
 
   return (
     <div className="felt-bg" style={{ minHeight: "100vh", padding: "20px 16px 60px" }}>
@@ -1111,42 +1157,109 @@ function ChartScreen({ players, buildChartData, onBack }) {
         {data.length === 0 ? (
           <div style={{ color: "#8A9188", textAlign: "center", marginTop: 40 }}>هنوز دستی ثبت نشده.</div>
         ) : (
-          <div style={{ background: "rgba(237,234,224,0.04)", borderRadius: 16, padding: "18px 14px", border: "1px solid rgba(237,234,224,0.1)" }}>
-            <svg viewBox={`0 0 ${W} ${H}`} width="100%" style={{ overflow: "visible" }}>
-              {[0, 0.25, 0.5, 0.75, 1].map((f, i) => {
-                const y = padT + chartH * (1 - f);
-                return (
-                  <g key={i}>
-                    <line x1={padL} y1={y} x2={W - padR} y2={y} stroke="rgba(237,234,224,0.12)" strokeDasharray="3 3" />
-                    <text x={padL - 8} y={y + 4} fontSize="10" fill="#9CAA9C" textAnchor="end">{Math.round(maxY * f)}</text>
+          <div style={{
+            background: "linear-gradient(160deg, rgba(237,234,224,0.05), rgba(237,234,224,0.02))",
+            borderRadius: 18, padding: "20px 14px 16px", border: "1px solid rgba(212,175,55,0.15)",
+            boxShadow: "0 20px 50px rgba(0,0,0,0.3)", position: "relative",
+          }}>
+            <div style={{ position: "relative" }}>
+              <svg
+                ref={svgRef} viewBox={`0 0 ${W} ${H}`} width="100%" style={{ overflow: "visible", touchAction: "none", cursor: "crosshair" }}
+                onMouseMove={handlePointer} onMouseLeave={() => setHoverRound(null)}
+                onTouchMove={handlePointer} onTouchEnd={() => setHoverRound(null)}
+              >
+                <defs>
+                  {players.map((p) => (
+                    <linearGradient key={p.id} id={`area-${p.id}`} x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="0%" stopColor={p.color} stopOpacity="0.38" />
+                      <stop offset="100%" stopColor={p.color} stopOpacity="0" />
+                    </linearGradient>
+                  ))}
+                  <filter id="lineGlow" x="-40%" y="-40%" width="180%" height="180%">
+                    <feGaussianBlur stdDeviation="2.4" result="blur" />
+                    <feMerge>
+                      <feMergeNode in="blur" />
+                      <feMergeNode in="SourceGraphic" />
+                    </feMerge>
+                  </filter>
+                </defs>
+
+                {[0, 0.25, 0.5, 0.75, 1].map((f, i) => {
+                  const y = padT + chartH * (1 - f);
+                  return (
+                    <g key={i}>
+                      <line x1={padL} y1={y} x2={W - padR} y2={y} stroke="rgba(237,234,224,0.09)" strokeDasharray="4 5" />
+                      <text x={padL - 8} y={y + 4} fontSize="10" fill="#8A9188" textAnchor="end">{Math.round(maxY * f)}</text>
+                    </g>
+                  );
+                })}
+                {data.map((row, i) => (
+                  <text key={i} x={xFor(row.round)} y={H - 8} fontSize="10" fill="#8A9188" textAnchor="middle">{row.round}</text>
+                ))}
+
+                {maxY >= ELIMINATION_LIMIT && (
+                  <g>
+                    <line x1={padL} x2={W - padR} y1={yFor(ELIMINATION_LIMIT)} y2={yFor(ELIMINATION_LIMIT)} stroke="#C4384F" strokeDasharray="7 5" strokeWidth="1.4" opacity="0.6" />
+                    <text x={W - padR} y={yFor(ELIMINATION_LIMIT) - 6} fontSize="9" fill="#C4384F" textAnchor="end" opacity="0.8">خط حذف ۳۰۰</text>
                   </g>
-                );
-              })}
-              {data.map((row, i) => (
-                <text key={i} x={xFor(row.round)} y={H - 8} fontSize="10" fill="#9CAA9C" textAnchor="middle">{row.round}</text>
-              ))}
-              {maxY >= ELIMINATION_LIMIT && (
-                <line x1={padL} x2={W - padR} y1={yFor(ELIMINATION_LIMIT)} y2={yFor(ELIMINATION_LIMIT)} stroke="#C4384F" strokeDasharray="6 4" strokeWidth="1.5" opacity="0.7" />
-              )}
-              {players.map((p) => {
-                const pts = data.filter((row) => row[p.name] != null);
-                if (pts.length === 0) return null;
-                return (
-                  <g key={p.id}>
-                    <polyline points={pts.map((row) => `${xFor(row.round)},${yFor(row[p.name])}`).join(" ")} fill="none" stroke={p.color} strokeWidth="2.5" strokeLinejoin="round" strokeLinecap="round" />
-                    {pts.map((row, i) => (<circle key={i} cx={xFor(row.round)} cy={yFor(row[p.name])} r="3.2" fill={p.color} />))}
-                  </g>
-                );
-              })}
-            </svg>
-            <div style={{ display: "flex", flexWrap: "wrap", gap: 16, marginTop: 16, justifyContent: "center" }}>
-              {players.map((p) => (
-                <div key={p.id} style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13, color: "#EDEAE0" }}>
-                  <span style={{ width: 10, height: 10, borderRadius: "50%", background: p.color, display: "inline-block" }} />
-                  {p.name}
+                )}
+
+                {visiblePlayers.map((p) => {
+                  const pts = data.filter((row) => row[p.name] != null).map((row) => ({ round: row.round, x: xFor(row.round), y: yFor(row[p.name]) }));
+                  if (pts.length === 0) return null;
+                  const linePath = smoothPath(pts);
+                  const areaPath = `${linePath} L ${pts[pts.length - 1].x} ${baseY} L ${pts[0].x} ${baseY} Z`;
+                  return (
+                    <g key={p.id} className="fade-up">
+                      <path d={areaPath} fill={`url(#area-${p.id})`} stroke="none" />
+                      <path d={linePath} fill="none" stroke={p.color} strokeWidth="2.6" strokeLinejoin="round" strokeLinecap="round" filter="url(#lineGlow)" />
+                      {pts.map((pt, i) => (
+                        <circle key={i} cx={pt.x} cy={pt.y} r={hoverRound === pt.round ? 5 : 3} fill={p.color} stroke="#0A0E0A" strokeWidth="1.5" />
+                      ))}
+                    </g>
+                  );
+                })}
+
+                {hoverRow && (
+                  <line x1={xFor(hoverRow.round)} x2={xFor(hoverRow.round)} y1={padT} y2={baseY} stroke="#D4AF37" strokeWidth="1" strokeDasharray="3 3" opacity="0.6" />
+                )}
+              </svg>
+
+              {hoverRow && (
+                <div style={{
+                  position: "absolute", top: 4, left: `${Math.min(78, Math.max(2, (xFor(hoverRow.round) / W) * 100))}%`,
+                  transform: xFor(hoverRow.round) / W > 0.6 ? "translateX(-100%)" : "none",
+                  background: "rgba(10,14,10,0.92)", border: "1px solid rgba(212,175,55,0.4)", borderRadius: 10,
+                  padding: "8px 12px", fontSize: 12, color: "#EDEAE0", pointerEvents: "none", minWidth: 120,
+                  boxShadow: "0 10px 24px rgba(0,0,0,0.4)", zIndex: 5,
+                }}>
+                  <div style={{ color: "#D4AF37", fontWeight: 700, marginBottom: 4 }}>دست {hoverRow.round}</div>
+                  {visiblePlayers.map((p) => hoverRow[p.name] != null && (
+                    <div key={p.id} style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 2 }}>
+                      <span style={{ width: 8, height: 8, borderRadius: "50%", background: p.color, display: "inline-block" }} />
+                      {p.name}: <b>{hoverRow[p.name]}</b>
+                    </div>
+                  ))}
                 </div>
-              ))}
+              )}
             </div>
+
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 10, marginTop: 18, justifyContent: "center" }}>
+              {players.map((p) => {
+                const isHidden = hidden.has(p.name);
+                return (
+                  <button key={p.id} onClick={() => toggleHidden(p.name)} style={{
+                    display: "flex", alignItems: "center", gap: 6, fontSize: 13, cursor: "pointer",
+                    background: isHidden ? "transparent" : `${p.color}18`, border: `1px solid ${isHidden ? "rgba(237,234,224,0.15)" : p.color + "55"}`,
+                    borderRadius: 999, padding: "6px 12px", color: isHidden ? "#5A605A" : "#EDEAE0", transition: "all 0.15s ease",
+                  }}>
+                    <span style={{ width: 10, height: 10, borderRadius: "50%", background: isHidden ? "#5A605A" : p.color, display: "inline-block" }} />
+                    {p.name}
+                  </button>
+                );
+              })}
+            </div>
+            <div style={{ textAlign: "center", color: "#5A605A", fontSize: 11, marginTop: 10 }}>روی نمودار بکش برای دیدن جزئیات هر دست · روی اسم بازیکن بزن برای مخفی/نمایش خط</div>
           </div>
         )}
       </div>
